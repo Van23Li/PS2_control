@@ -15,11 +15,11 @@
 
  各元件接线如下图所示（只用于展示接线，省略了部分电阻、电容等元件）：
 
-![image-20210106190020615](C:\Users\21782\AppData\Roaming\Typora\typora-user-images\image-20210106190020615.png)
+![image-20210106190222408](https://github.com/Van23Li/PS2_control/tree/main/imag/1.jpg)
 
 实物图如下：
 
-![image-20210106190118824](C:\Users\21782\AppData\Roaming\Typora\typora-user-images\image-20210106190118824.png)
+![image-20210106190118824](https://github.com/Van23Li/PS2_control/tree/main/imag/2.png)
 
 ## PS2手柄遥控小车
 
@@ -29,7 +29,7 @@ PS2手柄采用2.4G无线技术，有两种控制模式，本项目只使用绿�
 
  PS2手柄绿灯模式下的按键排布如下：
 
-![image-20210106190222408](C:\Users\21782\AppData\Roaming\Typora\typora-user-images\image-20210106190222408.png)
+![image-20210106190222408](https://github.com/Van23Li/PS2_control/tree/main/imag/2.jpg)
 
 各按键所设计的对应的功能如下表：
 
