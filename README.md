@@ -29,10 +29,10 @@ PS2手柄采用2.4G无线技术，有两种控制模式，本项目只使用绿�
 
  PS2手柄绿灯模式下的按键排布如下：
 
-![image-20210106190222408](https://github.com/Van23Li/PS2_control/tree/main/imag/2.jpg)
+![image-20210106190222408](https://github.com/Van23Li/PS2_control/tree/main/imag/3.jpg)
 
 各按键所设计的对应的功能如下表：
 
-![image-20210106190350709](C:\Users\21782\AppData\Roaming\Typora\typora-user-images\image-20210106190350709.png)
+![image-20210106190222408](https://github.com/Van23Li/PS2_control/tree/main/imag/4.jpg)
 
 详细设计参加pdf文件
