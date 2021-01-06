@@ -1,0 +1,4 @@
+"STARTUP.obj",
+"PS2_control.obj" 
+TO "PS2_control" 
+RAMSIZE(256) 

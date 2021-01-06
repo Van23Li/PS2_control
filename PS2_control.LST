@@ -1,0 +1,902 @@
+C51 COMPILER V9.05   PS2_CONTROL                                                           01/06/2021 18:59:39 PAGE 1   
+
+
+C51 COMPILER V9.05, COMPILATION OF MODULE PS2_CONTROL
+OBJECT MODULE PLACED IN PS2_control.OBJ
+COMPILER INVOKED BY: C:\Keil\C51\BIN\C51.EXE PS2_control.c BROWSE DEBUG OBJECTEXTEND TABS(2)
+
+line level    source
+
+   1          /******************************************************************************************************
+   2          说明：
+   3          红灯模式、绿灯模式两种模式下处理。
+   4          按下对应按钮，串口1返回对应按钮名称。
+   5          红灯模式下摇杆模拟数值有效，绿灯模式下无效。      
+   6          ******************************************************************************************************/
+   7          
+   8          
+   9          #include "stc12c5a60s2.h" //stc12头文件
+  10          #include <stdio.h>      //输入输出函数头文件
+  11          #include <string.h>     //字符头文件
+  12          
+  13          
+  14          /***********************************宏定义*******************************************/
+  15          #define interrupt_open()  {EA = 1;} //中断开
+  16          #define interrupt_close() {EA = 0;} //中断关
+  17          #define UART_BUF_SIZE    64     //字符接收数组大小
+  18          #define START_CMD     0x01    //手柄起始指令
+  19          #define ASK_DAT_CMD     0x42    //手柄应答指令
+  20          #define PSX_GREEN_MODE      0x41    //手柄绿灯模式对应码
+  21          #define PSX_RED_MODE        0x73    //手柄红灯模式对应码                 
+  22          #define PS2_CMD_NUM 16           //手柄按钮数
+  23          #define PSX_BUF_SIZE 9           //手柄数组大小
+  24          #define CMD_RETURN_SIZE 50         //串口打印数组大小
+  25          
+  26          #define       L1_RELEASE       0x01        //设置L1键弹起标志
+  27          #define       L2_RELEASE       0x02        //设置L2键弹起标志
+  28          #define       R1_RELEASE       0x03        //设置R1键弹起标志
+  29          #define       R2_RELEASE       0x04        //设置R2键弹起标志
+  30          #define       LU_RELEASE       0x05        //设置LU键弹起标志
+  31          #define       LD_RELEASE       0x06        //设置LD键弹起标志
+  32          #define       LL_RELEASE       0x07        //设置LL键弹起标志
+  33          #define       LR_RELEASE       0x08        //设置LR键弹起标志
+  34          #define       RU_RELEASE       0x09        //设置RU键弹起标志
+  35          #define       RD_RELEASE       0x10        //设置RD键弹起标志
+  36          #define       RL_RELEASE       0x11        //设置RL键弹起标志
+  37          #define       RR_RELEASE       0x12        //设置RR键弹起标志
+  38          #define       SE_RELEASE       0x13        //设置SE键弹起标志
+  39          #define       ST_RELEASE       0x14        //设置ST键弹起标志
+  40          #define       AL_RELEASE       0x15        //设置AL键弹起标志
+  41          #define       AR_RELEASE       0x16        //设置AR键弹起标志
+  42          
+  43          
+  44          /***********************************IO位定义*******************************************/
+  45          sbit PS2_DAT = P2^0; //pin1
+  46          sbit PS2_CMD = P2^1; //pin2
+  47          sbit PS2_ATT = P2^2; //pin6
+  48          sbit PS2_CLK = P2^3; //pin7
+  49          
+  50          sbit en=P2^6;   //lcd1602  6管脚
+  51          sbit rs=P2^4;  //lcd1602端口  4管脚
+  52          sbit rw=P2^5;//lcd1602控制端口 5管脚
+  53          
+  54          sbit motor_A=P1^5;
+  55          sbit motor_A_IN1=P1^4;
+C51 COMPILER V9.05   PS2_CONTROL                                                           01/06/2021 18:59:39 PAGE 2   
+
+  56          sbit motor_A_IN2=P1^3;
+  57          
+  58          sbit motor_B=P1^0;
+  59          sbit motor_B_IN1=P1^2;
+  60          sbit motor_B_IN2=P1^1;
+  61          
+  62          sbit motor_C=P1^6;
+  63          sbit motor_C_IN1=P3^0;
+  64          sbit motor_C_IN2=P1^7;
+  65          
+  66          sbit motor_D=P3^4;
+  67          sbit motor_D_IN1=P3^2;
+  68          sbit motor_D_IN2=P3^1;        //两个L298N驱动模块输入管脚
+  69          
+  70          unsigned int flag;              //2s更新转速循环计数标志
+  71          unsigned int PWM = 0;           //占空比，PWM越大，转速越快
+  72          unsigned int zhuansu = 0;         //电机转速
+  73          
+  74          unsigned char power = 0;              //电机转动标志
+  75          unsigned char uart_get_ok;              //中断标志位 无符号类型
+  76          unsigned char psx_buf[PSX_BUF_SIZE];    //通讯字符
+  77          unsigned char deal_flag = 0;              //处理标志
+  78          unsigned char release_flag = 0;               //弹起标志
+  79          
+  80          
+  81          /***********************************函数声明*******************************************/
+  82          void system_init(void);      //系统初始化
+  83          void io_init(void);        //IO初始化函数
+  84          void init_lcd(void);         //初始化显示屏
+  85          void init_timer(void);         //初始化中断
+  86          
+  87          
+  88          void North(unsigned int PWM_IN);        
+  89          void South(unsigned int PWM_IN);    
+  90          void West(unsigned int PWM_IN);     
+  91          void East(unsigned int PWM_IN);       
+  92          void TurnLeft(unsigned int PWM_IN);     
+  93          void Northwest(unsigned int PWM_IN);      
+  94          void Northeast(unsigned int PWM_IN);      
+  95          void Southwest(unsigned int PWM_IN);      
+  96          void Southeast(unsigned int PWM_IN);      
+  97          void TurnRight(unsigned int PWM_IN);         //电机转动函数
+  98          
+  99          void show_PWM(void);         //显示占空比
+ 100          void show_speed(void);         //显示转速
+ 101          void write_data(unsigned char date);         //向1602写一字节（数据）
+ 102          void write_com(unsigned char com);         //向1602写一字节（控制指令）
+ 103          
+ 104          void uart1_init(void);       //串口1初始化函数
+ 105          void uart1_send_str(unsigned char *s);    //串口1字符发送函数
+ 106          void delay_ms(unsigned int t);   //ms级别延时
+ 107          void delay_us(unsigned int t);     //us级别延时
+ 108          void psx_init(void);      //手柄初始化
+ 109          unsigned char psx_transfer(unsigned char dat);       //手柄指令解析
+ 110          void psx_write_read(unsigned char *get_buf);       //手柄读写
+ 111          void handle_psx_green(void);                   //手柄处理函数
+ 112          
+ 113          
+ 114          /*=========================================主函数================================================
+ 115          函数名：main
+ 116          功能介绍：程序运行入口
+ 117          函数参数：无
+C51 COMPILER V9.05   PS2_CONTROL                                                           01/06/2021 18:59:39 PAGE 3   
+
+ 118          返回值：无
+ 119          ===============================================================================================*/         
+ 120          void main(void) {              //主函数
+ 121   1        motor_A = 0;
+ 122   1        motor_B = 0;
+ 123   1        motor_C = 0;
+ 124   1        motor_D = 0;          //初始保证电机停转
+ 125   1        
+ 126   1        system_init();                 //系统初始化
+ 127   1        while(1) {
+ 128   2          handle_psx_green();          //处理绿灯模式
+ 129   2          delay_ms(50);
+ 130   2        } 
+ 131   1      }
+ 132          
+ 133          
+ 134          /*=========================================系统初始化============================================
+ 135          函数名：system_init
+ 136          功能介绍：各个功能函数的初始化设置
+ 137          函数参数：无
+ 138          返回值：无
+ 139          ===============================================================================================*/
+ 140          void system_init(void) {
+ 141   1        init_timer();           //初始化中断
+ 142   1        init_lcd();              //初始化液晶显示屏
+ 143   1        io_init();            //IO初始化
+ 144   1        uart1_init();       //串口1初始化
+ 145   1        uart1_send_str("uart1 init ok!\r\n");  //串口打印信息
+ 146   1        psx_init();        //手柄初始化
+ 147   1      }
+ 148          
+ 149          
+ 150          /*=========================================手柄初始化============================================
+ 151          函数名：psx_init
+ 152          功能介绍：PS2引脚拉高
+ 153          函数参数：无
+ 154          返回值：无
+ 155          ===============================================================================================*/
+ 156          void psx_init(void) {
+ 157   1        PS2_ATT = 1;
+ 158   1        PS2_CMD = 1;
+ 159   1        PS2_CLK = 1;
+ 160   1        return;
+ 161   1      }
+ 162          
+ 163          
+ 164          /*=========================================绿灯模式处理函数======================================
+ 165          函数名：handle_psx_green
+ 166          功能介绍：绿灯模式下，按钮处理
+ 167          函数参数：无
+ 168          返回值：无
+ 169          ===============================================================================================*/
+ 170          void handle_psx_green(void) {
+ 171   1        psx_write_read(psx_buf);//读取手柄
+ 172   1        if(psx_buf[1] == PSX_GREEN_MODE) {           //判断是否为绿灯模式
+ 173   2          switch(psx_buf[3]) {         
+ 174   3            case 0xef: {if(deal_flag < 1) {North(PWM);uart1_send_str("GREEN_MODE_PUSH:LU    ");release_flag = LU_RE
+             -LEASE;deal_flag++;}break;} //LU
+ 175   3            case 0xbf: {if(deal_flag < 1) {South(PWM);uart1_send_str("GREEN_MODE_PUSH:LD    ");release_flag = LD_RE
+             -LEASE;deal_flag++;}break;} //LD
+ 176   3            case 0x7f: {if(deal_flag < 1) {West(PWM);uart1_send_str("GREEN_MODE_PUSH:LR    ");release_flag = LR_REL
+             -EASE;deal_flag++;}break;} //LL 
+C51 COMPILER V9.05   PS2_CONTROL                                                           01/06/2021 18:59:39 PAGE 4   
+
+ 177   3            case 0xdf: {if(deal_flag < 1) {East(PWM);uart1_send_str("GREEN_MODE_PUSH:LL    ");release_flag = LL_REL
+             -EASE;deal_flag++;}break;} //LR
+ 178   3            default: {
+ 179   4               switch(release_flag) {
+ 180   5                 case LU_RELEASE: motor_A = 0;motor_B = 0;motor_C = 0;motor_D = 0;deal_flag = 0;release_flag = 0;uart
+             -1_send_str("RELEASE:LU\r\n");break;   //弹起后，指示灯灭，串口发送对应按钮弹起信息
+ 181   5                 case LD_RELEASE: motor_A = 0;motor_B = 0;motor_C = 0;motor_D = 0;deal_flag = 0;release_flag = 0;uart
+             -1_send_str("RELEASE:LD\r\n");break;
+ 182   5                 case LL_RELEASE: motor_A = 0;motor_B = 0;motor_C = 0;motor_D = 0;deal_flag = 0;release_flag = 0;uart
+             -1_send_str("RELEASE:LL\r\n");break;
+ 183   5                 case LR_RELEASE: motor_A = 0;motor_B = 0;motor_C = 0;motor_D = 0;deal_flag = 0;release_flag = 0;uart
+             -1_send_str("RELEASE:LR\r\n");break;
+ 184   5                 default:break;
+ 185   5               }            
+ 186   4               break;
+ 187   4            }
+ 188   3          }   
+ 189   2          switch(psx_buf[4]) {                           
+ 190   3              case 0xfb: {if(deal_flag < 1) {TurnLeft(PWM);uart1_send_str("GREEN_MODE_PUSH:L1    ");release_flag = L
+             -1_RELEASE;deal_flag++;}break;}  //L1
+ 191   3              case 0xfe: {if(deal_flag < 1) {PWM=PWM+10;if(PWM >100){PWM=0;}show_PWM();uart1_send_str("GREEN_MODE_
+             -PUSH:L2    ");release_flag = L2_RELEASE;deal_flag++;}break;}  //L2
+ 192   3              case 0xf7: {if(deal_flag < 1) {TurnRight(PWM);uart1_send_str("GREEN_MODE_PUSH:R1    ");release_flag 
+             -= R1_RELEASE;deal_flag++;}break;} //R1
+ 193   3              case 0xfd: {if(deal_flag < 1) {PWM=PWM-10;if(PWM >100){PWM=100;}show_PWM();uart1_send_str("GREEN_MOD
+             -E_PUSH:R2    ");release_flag = R2_RELEASE;deal_flag++;}break;}  //R2
+ 194   3              case 0xef: {if(deal_flag < 1) {Northeast(PWM);uart1_send_str("GREEN_MODE_PUSH:RU    ");release_flag 
+             -= RU_RELEASE;deal_flag++;}break;} //RU  
+ 195   3              case 0xbf: {if(deal_flag < 1) {Southwest(PWM);uart1_send_str("GREEN_MODE_PUSH:RD    ");release_flag 
+             -= RD_RELEASE;deal_flag++;}break;} //RD
+ 196   3              case 0x7f: {if(deal_flag < 1) {Northwest(PWM);uart1_send_str("GREEN_MODE_PUSH:RL    ");release_flag = 
+             -RL_RELEASE;deal_flag++;}break;} //RL
+ 197   3              case 0xdf: {if(deal_flag < 1) {Southeast(PWM);uart1_send_str("GREEN_MODE_PUSH:RR    ");release_flag 
+             -= RR_RELEASE;deal_flag++;}break;} //RR
+ 198   3            default:{
+ 199   4            switch(release_flag) {
+ 200   5              case L1_RELEASE: motor_A = 0;motor_B = 0;motor_C = 0;motor_D = 0;deal_flag = 0;release_flag = 0;uart1_
+             -send_str("RELEASE:L1\r\n");break;   //弹起后，指示灯灭，串口发送对应按钮弹起信息
+ 201   5              case L2_RELEASE: motor_A = 0;motor_B = 0;motor_C = 0;motor_D = 0;deal_flag = 0;release_flag = 0;uart1_
+             -send_str("RELEASE:L2\r\n");break;
+ 202   5              case R1_RELEASE: motor_A = 0;motor_B = 0;motor_C = 0;motor_D = 0;deal_flag = 0;release_flag = 0;uart1_
+             -send_str("RELEASE:R1\r\n");break;
+ 203   5              case R2_RELEASE: motor_A = 0;motor_B = 0;motor_C = 0;motor_D = 0;deal_flag = 0;release_flag = 0;uart1_
+             -send_str("RELEASE:R2\r\n");break;
+ 204   5              case RU_RELEASE: motor_A = 0;motor_B = 0;motor_C = 0;motor_D = 0;deal_flag = 0;release_flag = 0;uart1_
+             -send_str("RELEASE:RU\r\n");break;
+ 205   5              case RD_RELEASE: motor_A = 0;motor_B = 0;motor_C = 0;motor_D = 0;deal_flag = 0;release_flag = 0;uart1_
+             -send_str("RELEASE:RD\r\n");break;
+ 206   5              case RL_RELEASE: motor_A = 0;motor_B = 0;motor_C = 0;motor_D = 0;deal_flag = 0;release_flag = 0;uart1_
+             -send_str("RELEASE:RL\r\n");break;
+ 207   5              case RR_RELEASE: motor_A = 0;motor_B = 0;motor_C = 0;motor_D = 0;deal_flag = 0;release_flag = 0;uart1_
+             -send_str("RELEASE:RR\r\n");break;
+ 208   5              default:break;
+ 209   5             }            
+ 210   4             break;
+ 211   4             }
+ 212   3           }
+ 213   2        }   
+ 214   1      }
+ 215                     
+ 216          
+ 217          /*=========================================手柄原码获取函数=======================================
+C51 COMPILER V9.05   PS2_CONTROL                                                           01/06/2021 18:59:39 PAGE 5   
+
+ 218          函数名：psx_write_read
+ 219          功能介绍：解析并保存手柄传输的数据
+ 220          函数参数：*get_buf 获取数据
+ 221          返回值：无
+ 222          ===============================================================================================*/
+ 223          void psx_write_read(unsigned char *get_buf) {
+ 224   1        PS2_ATT = 0;              //各组发送接收的字节前，必须被拉低，再重新置位
+ 225   1        get_buf[0] = psx_transfer(START_CMD);       //主机将0x01传给手柄 手柄起始指令
+ 226   1        get_buf[1] = psx_transfer(ASK_DAT_CMD);     //主机将0x42传给手柄 手柄应答指令 0x41=绿灯,0x73=红灯
+ 227   1        get_buf[2] = psx_transfer(get_buf[0]);      //手柄将0x5A传给主机 标志数据来了 后面主机都没有再穿数据给手柄
+ 228   1        get_buf[3] = psx_transfer(get_buf[0]);      //左边按键
+ 229   1        get_buf[4] = psx_transfer(get_buf[0]);      //右边按键
+ 230   1        get_buf[5] = psx_transfer(get_buf[0]);      //模拟量
+ 231   1        get_buf[6] = psx_transfer(get_buf[0]);      //模拟量
+ 232   1        get_buf[7] = psx_transfer(get_buf[0]);      //模拟量
+ 233   1        get_buf[8] = psx_transfer(get_buf[0]);      //模拟量
+ 234   1        PS2_ATT = 1;
+ 235   1      }
+ 236          
+ 237          
+ 238          /*=========================================手柄码解析函数=======================================
+ 239          函数名：psx_transfer
+ 240          功能介绍：解析手柄传输的数据
+ 241          函数参数：dat（手柄源码）
+ 242          返回值：rd_data（接）
+ 243          ===============================================================================================*/
+ 244          unsigned char psx_transfer(unsigned char dat) {
+ 245   1        unsigned char rd_data ,wt_data, i;
+ 246   1        wt_data = dat;
+ 247   1        rd_data = 0;
+ 248   1        for(i = 0;i < 8;i++){
+ 249   2          PS2_CMD = (bit) (wt_data & (0x01 << i));  //把0x01左移i位后取并，也就是从右到左提取wt_data，共8位，转换为
+             -bit类型
+ 250   2                                                    //赋值给PS2_CMD（主机流向手柄的信息）
+ 251   2          PS2_CLK = 1;
+ 252   2          PS2_CLK = 0;
+ 253   2          delay_us(3);  //延时3ms
+ 254   2          PS2_CLK = 1;
+ 255   2          if(PS2_DAT) {
+ 256   3            rd_data |= 0x01<<i;   //最后结果是rd_data = PS2_DAT（手柄流向主机的信息）
+ 257   3          }
+ 258   2        }
+ 259   1        return rd_data;
+ 260   1      }
+ 261          
+ 262          
+ 263          /*=========================================串口1初始化函数=======================================
+ 264          函数名：uart1_init
+ 265          功能介绍：串口的相关设置
+ 266          函数参数：无
+ 267          返回值：无
+ 268          ===============================================================================================*/
+ 269          void uart1_init(void) {  //4800bps@11.0592MHz
+ 270   1        PCON &= 0x7F;   //01111111 波特率不倍速
+ 271   1        SCON = 0x50;    //8位数据,可变波特率
+ 272   1        BRT = 0xB8;     //设定独立波特率发生器重装值
+ 273   1        AUXR |= 0x04;   //独立波特率发生器时钟为Fosc,即1T 按位或后赋值
+ 274   1        AUXR |= 0x01;   //串口1选择独立波特率发生器为波特率发生器
+ 275   1        AUXR |= 0x10;   //启动独立波特率发生器
+ 276   1      }
+ 277          
+ 278          
+C51 COMPILER V9.05   PS2_CONTROL                                                           01/06/2021 18:59:39 PAGE 6   
+
+ 279          /*=========================================串口1字符串发送函数=====================================
+ 280          函数名：uart1_send_str
+ 281          功能介绍：发送字符串
+ 282          函数参数：*s :发送的字符串首地址
+ 283          返回值：无
+ 284          ===============================================================================================*/
+ 285          void uart1_send_str(unsigned char *s) {   
+ 286   1          while(*s!='\0') {
+ 287   2          SBUF=*s;
+ 288   2          while(!TI);
+ 289   2          TI=0;
+ 290   2          s++;
+ 291   2        } 
+ 292   1        return;
+ 293   1      } 
+ 294          
+ 295          
+ 296          /*=========================================IO初始化============================================
+ 297          函数名：io_init
+ 298          功能介绍：IO口设置
+ 299          函数参数：无
+ 300          返回值：无
+ 301          ===============================================================================================*/
+ 302          void io_init(void) {
+ 303   1        P2M0 = 0x00;      //设置P2端口为准双向
+ 304   1        P2M1 = 0;
+ 305   1        P3M0 = 0xff;      //设置P3端口为推挽输出
+ 306   1        P3M1 = 0;
+ 307   1        return;
+ 308   1      }
+ 309          
+ 310          
+ 311          /*=========================================延时函数==============================================
+ 312          函数名：delay_ms
+ 313          功能介绍：ms级延时
+ 314          函数参数：t :延时时间
+ 315          返回值：无
+ 316          ===============================================================================================*/
+ 317          void delay_ms(unsigned int z) {
+ 318   1        unsigned int x,y;
+ 319   1        for(x=z; x>0; x--)
+ 320   1          for(y=110; y>0; y--);
+ 321   1      }
+ 322          
+ 323          
+ 324          /*=========================================延时函数==============================================
+ 325          函数名：delay_us
+ 326          功能介绍：us级延时
+ 327          函数参数：t :延时时间
+ 328          返回值：无
+ 329          ===============================================================================================*/
+ 330          void delay_us(unsigned int zz) {
+ 331   1        while(zz--);
+ 332   1      }
+ 333          
+ 334          
+ 335          /*=========================================前进函数==============================================
+ 336          函数名：North
+ 337          功能介绍：小车前进
+ 338          函数参数：PWM_IN：调节占空比，越高车轮转速越快
+ 339          返回值：无
+ 340          ===============================================================================================*/
+C51 COMPILER V9.05   PS2_CONTROL                                                           01/06/2021 18:59:39 PAGE 7   
+
+ 341          void North(unsigned int PWM_IN) {
+ 342   1        motor_A_IN1 = 0; motor_A_IN2 = 1;   //前
+ 343   1        motor_B_IN1 = 0; motor_B_IN2 = 1;   //前
+ 344   1        motor_C_IN1 = 0; motor_C_IN2 = 1;   //前
+ 345   1        motor_D_IN1 = 0; motor_D_IN2 = 1;   //前
+ 346   1                    power = 1;
+ 347   1                    while(power){
+ 348   2                      motor_A = 1;
+ 349   2                      motor_B = 1;
+ 350   2                      motor_C = 1;
+ 351   2                      motor_D = 1;
+ 352   2                      delay_ms(PWM_IN);
+ 353   2                      motor_A = 0;
+ 354   2                      motor_B = 0;
+ 355   2                      motor_C = 0;
+ 356   2                      motor_D = 0;
+ 357   2                      delay_ms(100-PWM_IN);
+ 358   2                      psx_write_read(psx_buf);//读取手柄
+ 359   2                      switch(psx_buf[3]) {
+ 360   3                        case 0xef:{break;}
+ 361   3                        default: {power = 0;break;}}
+ 362   2                      }
+ 363   1      }
+ 364          
+ 365          
+ 366          /*=========================================后退函数==============================================
+ 367          函数名：South
+ 368          功能介绍：小车后退
+ 369          函数参数：PWM_IN：调节占空比，越高车轮转速越快
+ 370          返回值：无
+ 371          ===============================================================================================*/
+ 372          void South(unsigned int PWM_IN) {
+ 373   1        motor_A_IN1 = 1; motor_A_IN2 = 0;   //后
+ 374   1        motor_B_IN1 = 1; motor_B_IN2 = 0;   //后
+ 375   1        motor_C_IN1 = 1; motor_C_IN2 = 0;   //后
+ 376   1        motor_D_IN1 = 1; motor_D_IN2 = 0;   //后
+ 377   1                    power = 1;
+ 378   1                    while(power){
+ 379   2                      motor_A = 1;
+ 380   2                      motor_B = 1;
+ 381   2                      motor_C = 1;
+ 382   2                      motor_D = 1;
+ 383   2                      delay_ms(PWM_IN);
+ 384   2                      motor_A = 0;
+ 385   2                      motor_B = 0;
+ 386   2                      motor_C = 0;
+ 387   2                      motor_D = 0;
+ 388   2                      delay_ms(100-PWM_IN);
+ 389   2                      psx_write_read(psx_buf);//读取手柄
+ 390   2                      switch(psx_buf[3]) {
+ 391   3                        case 0xbf:{break;}
+ 392   3                        default: {power = 0;break;}}
+ 393   2                      }
+ 394   1      }
+ 395          
+ 396          
+ 397          /*=========================================左向平移函数==============================================
+ 398          函数名：West
+ 399          功能介绍：左向平移
+ 400          函数参数：PWM_IN：调节占空比，越高车轮转速越快
+ 401          返回值：无
+ 402          ===============================================================================================*/
+C51 COMPILER V9.05   PS2_CONTROL                                                           01/06/2021 18:59:39 PAGE 8   
+
+ 403          void West(unsigned int PWM_IN) {
+ 404   1        motor_A_IN1 = 1; motor_A_IN2 = 0;   //后
+ 405   1        motor_B_IN1 = 0; motor_B_IN2 = 1;   //前
+ 406   1        motor_C_IN1 = 1; motor_C_IN2 = 0;   //后
+ 407   1        motor_D_IN1 = 0; motor_D_IN2 = 1;   //前
+ 408   1                    power = 1;
+ 409   1                    while(power){
+ 410   2                      motor_A = 1;
+ 411   2                      motor_B = 1;
+ 412   2                      motor_C = 1;
+ 413   2                      motor_D = 1;
+ 414   2                      delay_ms(PWM_IN);
+ 415   2                      motor_A = 0;
+ 416   2                      motor_B = 0;
+ 417   2                      motor_C = 0;
+ 418   2                      motor_D = 0;
+ 419   2                      delay_ms(100-PWM_IN);
+ 420   2                      psx_write_read(psx_buf);//读取手柄
+ 421   2                      switch(psx_buf[3]) {
+ 422   3                        case 0x7f:{break;}
+ 423   3                        default: {power = 0;break;}}
+ 424   2                      }
+ 425   1      }
+ 426          
+ 427          
+ 428          /*=========================================右向平移函数==============================================
+ 429          函数名：East
+ 430          功能介绍：右向平移
+ 431          函数参数：PWM_IN：调节占空比，越高车轮转速越快
+ 432          返回值：无
+ 433          ===============================================================================================*/
+ 434          void East(unsigned int PWM_IN) {
+ 435   1        motor_A_IN1 = 0; motor_A_IN2 = 1;   //前
+ 436   1        motor_B_IN1 = 1; motor_B_IN2 = 0;   //后
+ 437   1        motor_C_IN1 = 0; motor_C_IN2 = 1;   //前
+ 438   1        motor_D_IN1 = 1; motor_D_IN2 = 0;   //后
+ 439   1                    power = 1;
+ 440   1                    while(power){
+ 441   2                      motor_A = 1;
+ 442   2                      motor_B = 1;
+ 443   2                      motor_C = 1;
+ 444   2                      motor_D = 1;
+ 445   2                      delay_ms(PWM_IN);
+ 446   2                      motor_A = 0;
+ 447   2                      motor_B = 0;
+ 448   2                      motor_C = 0;
+ 449   2                      motor_D = 0;
+ 450   2                      delay_ms(100-PWM_IN);
+ 451   2                      psx_write_read(psx_buf);//读取手柄
+ 452   2                      switch(psx_buf[3]) {
+ 453   3                        case 0xdf:{break;}
+ 454   3                        default: {power = 0;break;}}
+ 455   2                      }
+ 456   1      }
+ 457          
+ 458          
+ 459          /*=========================================逆时针旋转函数==============================================
+ 460          函数名：TurnLeft
+ 461          功能介绍：逆时针旋转
+ 462          函数参数：PWM_IN：调节占空比，越高车轮转速越快
+ 463          返回值：无
+ 464          ===============================================================================================*/
+C51 COMPILER V9.05   PS2_CONTROL                                                           01/06/2021 18:59:39 PAGE 9   
+
+ 465          void TurnLeft(unsigned int PWM_IN) {
+ 466   1        motor_A_IN1 = 1; motor_A_IN2 = 0;   //后
+ 467   1        motor_B_IN1 = 0; motor_B_IN2 = 1;   //前
+ 468   1        motor_C_IN1 = 0; motor_C_IN2 = 1;   //前
+ 469   1        motor_D_IN1 = 1; motor_D_IN2 = 0;   //后
+ 470   1                    power = 1;
+ 471   1                    while(power){
+ 472   2                      motor_A = 1;
+ 473   2                      motor_B = 1;
+ 474   2                      motor_C = 1;
+ 475   2                      motor_D = 1;
+ 476   2                      delay_ms(PWM_IN);
+ 477   2                      motor_A = 0;
+ 478   2                      motor_B = 0;
+ 479   2                      motor_C = 0;
+ 480   2                      motor_D = 0;
+ 481   2                      delay_ms(100-PWM_IN);
+ 482   2                      psx_write_read(psx_buf);//读取手柄
+ 483   2                      switch(psx_buf[4]) {
+ 484   3                        case 0xfb:{break;}
+ 485   3                        default: {power = 0;break;}}
+ 486   2                      }
+ 487   1      }
+ 488          
+ 489          
+ 490          /*=========================================顺时针函数==============================================
+ 491          函数名：TurnRight
+ 492          功能介绍：逆时针旋转
+ 493          函数参数：PWM_IN：调节占空比，越高车轮转速越快
+ 494          返回值：无
+ 495          ===============================================================================================*/
+ 496          void TurnRight(unsigned int PWM_IN) {
+ 497   1        motor_A_IN1 = 0; motor_A_IN2 = 1;   //前
+ 498   1        motor_B_IN1 = 1; motor_B_IN2 = 0;   //后
+ 499   1        motor_C_IN1 = 1; motor_C_IN2 = 0;   //后
+ 500   1        motor_D_IN1 = 0; motor_D_IN2 = 1;   //前
+ 501   1                    power = 1;
+ 502   1                    while(power){
+ 503   2                      motor_A = 1;
+ 504   2                      motor_B = 1;
+ 505   2                      motor_C = 1;
+ 506   2                      motor_D = 1;
+ 507   2                      delay_ms(PWM_IN);
+ 508   2                      motor_A = 0;
+ 509   2                      motor_B = 0;
+ 510   2                      motor_C = 0;
+ 511   2                      motor_D = 0;
+ 512   2                      delay_ms(100-PWM_IN);
+ 513   2                      psx_write_read(psx_buf);//读取手柄
+ 514   2                      switch(psx_buf[4]) {
+ 515   3                        case 0xf7:{break;}
+ 516   3                        default: {power = 0;break;}}
+ 517   2                      }
+ 518   1      }
+ 519          
+ 520          
+ 521          /*=========================================左前方平移函数==============================================
+ 522          函数名：Northwest
+ 523          功能介绍：左前方平移
+ 524          函数参数：PWM_IN：调节占空比，越高车轮转速越快
+ 525          返回值：无
+ 526          ===============================================================================================*/
+C51 COMPILER V9.05   PS2_CONTROL                                                           01/06/2021 18:59:39 PAGE 10  
+
+ 527          void Northwest(unsigned int PWM_IN) {
+ 528   1        motor_A_IN1 = 0; motor_A_IN2 = 0; 
+ 529   1        motor_B_IN1 = 0; motor_B_IN2 = 1;   //前
+ 530   1        motor_C_IN1 = 0; motor_C_IN2 = 0;
+ 531   1        motor_D_IN1 = 0; motor_D_IN2 = 1;   //前
+ 532   1                    power = 1;
+ 533   1                    while(power){
+ 534   2                      motor_A = 1;
+ 535   2                      motor_B = 1;
+ 536   2                      motor_C = 1;
+ 537   2                      motor_D = 1;
+ 538   2                      delay_ms(PWM_IN);
+ 539   2                      motor_A = 0;
+ 540   2                      motor_B = 0;
+ 541   2                      motor_C = 0;
+ 542   2                      motor_D = 0;
+ 543   2                      delay_ms(100-PWM_IN);
+ 544   2                      psx_write_read(psx_buf);//读取手柄
+ 545   2                      switch(psx_buf[4]) {
+ 546   3                        case 0x7f:{break;}
+ 547   3                        default: {power = 0;break;}}
+ 548   2                      }
+ 549   1      }
+ 550          
+ 551          
+ 552          /*=========================================右前方平移函数==============================================
+ 553          函数名：Northeast
+ 554          功能介绍：右前方平移
+ 555          函数参数：PWM_IN：调节占空比，越高车轮转速越快
+ 556          返回值：无
+ 557          ===============================================================================================*/
+ 558          void Northeast(unsigned int PWM_IN) {
+ 559   1        motor_A_IN1 = 0; motor_A_IN2 = 1;   //前
+ 560   1        motor_B_IN1 = 0; motor_B_IN2 = 0; 
+ 561   1        motor_C_IN1 = 0; motor_C_IN2 = 1; //前
+ 562   1        motor_D_IN1 = 0; motor_D_IN2 = 0; 
+ 563   1                    power = 1;
+ 564   1                    while(power){
+ 565   2                      motor_A = 1;
+ 566   2                      motor_B = 1;
+ 567   2                      motor_C = 1;
+ 568   2                      motor_D = 1;
+ 569   2                      delay_ms(PWM_IN);
+ 570   2                      motor_A = 0;
+ 571   2                      motor_B = 0;
+ 572   2                      motor_C = 0;
+ 573   2                      motor_D = 0;
+ 574   2                      delay_ms(100-PWM_IN);
+ 575   2                      psx_write_read(psx_buf);//读取手柄
+ 576   2                      switch(psx_buf[4]) {
+ 577   3                        case 0xef:{break;}
+ 578   3                        default: {power = 0;break;}}
+ 579   2                      }
+ 580   1      }
+ 581          
+ 582          
+ 583          /*=========================================左后方平移函数==============================================
+ 584          函数名：Southwest
+ 585          功能介绍：右前方平移
+ 586          函数参数：PWM_IN：调节占空比，越高车轮转速越快
+ 587          返回值：无
+ 588          ===============================================================================================*/
+C51 COMPILER V9.05   PS2_CONTROL                                                           01/06/2021 18:59:39 PAGE 11  
+
+ 589          void Southwest(unsigned int PWM_IN) {
+ 590   1        motor_A_IN1 = 1; motor_A_IN2 = 0;   //后
+ 591   1        motor_B_IN1 = 0; motor_B_IN2 = 0; 
+ 592   1        motor_C_IN1 = 1; motor_C_IN2 = 0; //后
+ 593   1        motor_D_IN1 = 0; motor_D_IN2 = 0; 
+ 594   1                    power = 1;
+ 595   1                    while(power){
+ 596   2                      motor_A = 1;
+ 597   2                      motor_B = 1;
+ 598   2                      motor_C = 1;
+ 599   2                      motor_D = 1;
+ 600   2                      delay_ms(PWM_IN);
+ 601   2                      motor_A = 0;
+ 602   2                      motor_B = 0;
+ 603   2                      motor_C = 0;
+ 604   2                      motor_D = 0;
+ 605   2                      delay_ms(100-PWM_IN);
+ 606   2                      psx_write_read(psx_buf);//读取手柄
+ 607   2                      switch(psx_buf[4]) {
+ 608   3                        case 0xbf:{break;}
+ 609   3                        default: {power = 0;break;}}
+ 610   2                      }
+ 611   1      }
+ 612          
+ 613          
+ 614          /*=========================================右后方平移函数==============================================
+ 615          函数名：Southeast
+ 616          功能介绍：右后方平移
+ 617          函数参数：PWM_IN：调节占空比，越高车轮转速越快
+ 618          返回值：无
+ 619          ===============================================================================================*/
+ 620          void Southeast(unsigned int PWM_IN) {
+ 621   1        motor_A_IN1 = 0; motor_A_IN2 = 0;
+ 622   1        motor_B_IN1 = 1; motor_B_IN2 = 0;     //后
+ 623   1        motor_C_IN1 = 0; motor_C_IN2 = 0;
+ 624   1        motor_D_IN1 = 1; motor_D_IN2 = 0;   //后
+ 625   1                    power = 1;
+ 626   1                    while(power){
+ 627   2                      motor_A = 1;
+ 628   2                      motor_B = 1;
+ 629   2                      motor_C = 1;
+ 630   2                      motor_D = 1;
+ 631   2                      delay_ms(PWM_IN);
+ 632   2                      motor_A = 0;
+ 633   2                      motor_B = 0;
+ 634   2                      motor_C = 0;
+ 635   2                      motor_D = 0;
+ 636   2                      delay_ms(100-PWM_IN);
+ 637   2                      psx_write_read(psx_buf);//读取手柄
+ 638   2                      switch(psx_buf[4]) {
+ 639   3                        case 0xdf:{break;}
+ 640   3                        default: {power = 0;break;}}
+ 641   2                      }
+ 642   1      }
+ 643          
+ 644          
+ 645          /*=========================================向液晶显示屏写指令函数=========================================
+             -=====
+ 646          函数名：write_com
+ 647          功能介绍：向液晶显示屏写指令函数
+ 648          函数参数：com：将写入的命令
+ 649          返回值：无
+C51 COMPILER V9.05   PS2_CONTROL                                                           01/06/2021 18:59:39 PAGE 12  
+
+ 650          ===============================================================================================*/
+ 651          void write_com(unsigned char com)//向1602写一字节（控制指令）
+ 652          {
+ 653   1        rs=0;
+ 654   1        P0=com;
+ 655   1        delay_ms(5);
+ 656   1        en=1;
+ 657   1        delay_ms(10);
+ 658   1        en=0;
+ 659   1      }
+ 660          
+ 661          
+ 662          /*=========================================向液晶显示屏写数据函数=========================================
+             -=====
+ 663          函数名：write_data
+ 664          功能介绍：向液晶显示屏写数据函数
+ 665          函数参数：data：将写入的数据
+ 666          返回值：无
+ 667          ===============================================================================================*/
+ 668          void write_data(unsigned char date)//向1602写一字节（数据）
+ 669          {
+ 670   1        rs=1;
+ 671   1        P0=date;
+ 672   1        delay_ms(5);
+ 673   1        en=1;
+ 674   1        delay_ms(5);
+ 675   1        en=0;
+ 676   1      }
+ 677          
+ 678          
+ 679          /*=========================================定时器初始化函数==============================================
+ 680          函数名：init_timer
+ 681          功能介绍：定时器初始化函数
+ 682          函数参数：
+ 683          返回值：无
+ 684          ===============================================================================================*/
+ 685          void init_timer()
+ 686          {
+ 687   1        TMOD=0x01;               //定时器0为工作方式1 ，定时器1为工作方式0
+ 688   1        
+ 689   1        TH0=(65536-9216)/256;
+ 690   1        TL0=(65536-9216)%256;           //定时器装入初值 10ms
+ 691   1        EA=1;                    //开总中断 
+ 692   1        ET0=1;                   //定时器0开中断
+ 693   1        TR0=1;                    //定时器0运行控制位
+ 694   1        
+ 695   1        EX1=1;                  //打开外部中断1中断
+ 696   1        IT1=1;                 //外部中断1触发方式为跳变沿触发，INT1又高到低有效 
+ 697   1      }
+ 698          
+ 699          
+ 700          /*=========================================液晶显示屏初始化函数===========================================
+             -===
+ 701          函数名：init_lcd
+ 702          功能介绍：液晶显示屏初始化函数
+ 703          函数参数：
+ 704          返回值：无
+ 705          ===============================================================================================*/
+ 706          void init_lcd()//初始化函数
+ 707          { 
+ 708   1        en=0;
+ 709   1        rw=0;
+C51 COMPILER V9.05   PS2_CONTROL                                                           01/06/2021 18:59:39 PAGE 13  
+
+ 710   1        write_com(0x38);             //5X7显示
+ 711   1        write_com(0x01);         //lcd初始化
+ 712   1        write_com(0x0c);       //关闭光标
+ 713   1        write_com(0x01);         //lcd初始化
+ 714   1        
+ 715   1        write_com(0x80);
+ 716   1        write_data('V');
+ 717   1        write_data(':');
+ 718   1        write_com(0x80+7);     //第一行显示转速
+ 719   1        write_data('r');
+ 720   1        write_data('p');
+ 721   1        write_data('m');
+ 722   1        write_com(0x80+0x40); 
+ 723   1        write_data('z');
+ 724   1        write_data('h');
+ 725   1        write_data('a');
+ 726   1        write_data('n');
+ 727   1        write_data('k');
+ 728   1        write_data('o');
+ 729   1        write_data('n');
+ 730   1        write_data('g');
+ 731   1        write_data('b');
+ 732   1        write_data('i');    //在第二行显示zhankongbi:
+ 733   1        write_data(':');
+ 734   1        show_PWM();
+ 735   1      }
+ 736          
+ 737          
+ 738          /*=========================================显示转速函数==============================================
+ 739          函数名：show_speed
+ 740          功能介绍：显示转速
+ 741          函数参数：
+ 742          返回值：无
+ 743          ===============================================================================================*/
+ 744          void show_speed()
+ 745          {
+ 746   1        unsigned zhuansu_x;
+ 747   1        write_com(0x82);
+ 748   1        zhuansu_x=zhuansu/4;    //将两秒内的计数乘以30得到转每分 2个脉冲/圈 zhuansu/4
+ 749   1      
+ 750   1        if(zhuansu_x/10000!=0)
+ 751   1         write_data(zhuansu_x/10000+0x30);              //如果转速的万位不为0 正常显示否则显示空格
+ 752   1         else
+ 753   1         write_data(' ');
+ 754   1      
+ 755   1        if(zhuansu_x/1000==0)
+ 756   1        write_data(' ');
+ 757   1        else 
+ 758   1        write_data(zhuansu_x%10000/1000+0x30);                //如果转速小于1000 千位为空格 否则正常显示
+ 759   1        
+ 760   1        if(zhuansu_x/100==0)
+ 761   1        write_data(' ');
+ 762   1        else
+ 763   1        write_data(zhuansu_x%10000%1000/100+0x30);             //如果转速小于100 百位为空格 否则正常显示
+ 764   1      
+ 765   1          if(zhuansu_x/10==0)
+ 766   1        write_data(' ');
+ 767   1        else
+ 768   1        write_data(zhuansu_x%10000%1000%100/10+0x30);         //如果转速小于10 十位为空格 否则正常显示
+ 769   1      
+ 770   1        write_data(zhuansu_x%10000%1000%100%10+0x30);
+ 771   1        write_com(0xd0);
+C51 COMPILER V9.05   PS2_CONTROL                                                           01/06/2021 18:59:39 PAGE 14  
+
+ 772   1      }
+ 773          
+ 774          
+ 775          /*=========================================显示占空比函数==============================================
+ 776          函数名：show_PWM
+ 777          功能介绍：显示占空比数值
+ 778          函数参数：
+ 779          返回值：无
+ 780          ===============================================================================================*/
+ 781          void show_PWM()     //显示占空比数值
+ 782          {
+ 783   1         write_com(0xcd);
+ 784   1         write_data(PWM/100+0x30);
+ 785   1        
+ 786   1         write_com(0xce);
+ 787   1         write_data(PWM%100/10+0x30); 
+ 788   1      
+ 789   1        write_com(0xcf);
+ 790   1         write_data(PWM%10+0x30);   
+ 791   1      }
+ 792          
+ 793          
+ 794          /*=========================================外部中断==============================================
+ 795          函数名：int1
+ 796          功能介绍：记录霍尔元件脉冲数，用于计算电机转速
+ 797          函数参数：
+ 798          返回值：无
+ 799          ===============================================================================================*/
+ 800          void int1()interrupt 2        //外部中断1 脉冲技术记录电机的转速 电机转一圈zhuansu加1
+ 801          {
+ 802   1        zhuansu++;
+ 803   1      }
+ 804          
+ 805          
+ 806          /*=========================================定时器中断==============================================
+ 807          函数名：int2
+ 808          功能介绍：每隔1ms中断一次，累计2s时更新一次速度显示
+ 809          函数参数：
+ 810          返回值：无
+ 811          ===============================================================================================*/
+ 812          void int2()interrupt 1          //定时器0 显示转速
+ 813          {
+ 814   1        TH0=(65536-9216)/256;
+ 815   1        TL0=(65536-9216)%256;//定时10ms
+ 816   1        flag++;
+ 817   1        if(flag==200)          //计时到达2s，即每隔2s更新一此速度显示
+ 818   1          {
+ 819   2        show_speed();         //显示转速
+ 820   2        zhuansu=0;            //转速置0
+ 821   2        flag=0;
+ 822   2        }
+ 823   1      }
+
+
+MODULE INFORMATION:   STATIC OVERLAYABLE
+   CODE SIZE        =   2595    ----
+   CONSTANT SIZE    =    449    ----
+   XDATA SIZE       =   ----    ----
+   PDATA SIZE       =   ----    ----
+   DATA SIZE        =     19      26
+   IDATA SIZE       =   ----    ----
+   BIT SIZE         =   ----    ----
+C51 COMPILER V9.05   PS2_CONTROL                                                           01/06/2021 18:59:39 PAGE 15  
+
+END OF MODULE INFORMATION.
+
+
+C51 COMPILATION COMPLETE.  0 WARNING(S),  0 ERROR(S)
